@@ -3,146 +3,187 @@
 const Env = use('Env')
 const AWS = require('aws-sdk')
 
-// Chargement unique de la config AWS depuis le .env
+// Charge les credentials AWS depuis le .env
 AWS.config.update({
   accessKeyId: Env.get('AWS_ACCESS_KEY_ID'),
   secretAccessKey: Env.get('AWS_SECRET_ACCESS_KEY'),
   // sessionToken:    Env.get('AWS_SESSION_TOKEN'), // décommentez si vous utilisez STS
-  region: Env.get('AWS_REGION', 'us-east-1'),
 })
 
 class SesTemplateController {
-  /**
-   * Extrait les champs dynamiques de type {{ field }} dans une string.
-   */
-  getDynamicFields(contentStr) {
-    const dynamicFieldsArr = []
-    if (!contentStr) return dynamicFieldsArr
 
-    const matches = contentStr.match(/{{\s*[\w.]+\s*}}/g)
-    if (matches) {
-      matches.forEach(tag => {
-        const field = tag.match(/[\w.]+/)[0]
-        dynamicFieldsArr.push(field)
-      })
+  getDynamicFields(contentStr) {
+    // Extrait les champs mustache de type {{field}}
+    let dynamicFieldsArr = []
+    if (contentStr) {
+      const matchRegex = contentStr.match(/{{\s*[\w\.]+\s*}}/g)
+      if (matchRegex) {
+        dynamicFieldsArr = matchRegex.map(x => x.match(/[\w\.]+/)[0])
+      }
     }
     return dynamicFieldsArr
   }
 
-  /**
-   * Create a new SES template
-   */
   async createTemplate({ request, response }) {
-    const { region, TemplateName, HtmlPart, SubjectPart, TextPart } = request.post()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
+    const requestBody = request.post()
 
+    // Si vous souhaitez surcharger la région à la volée
+    AWS.config.update({ region: requestBody.region })
+
+    const ses = new AWS.SES()
     const params = {
-      Template: { TemplateName, HtmlPart, SubjectPart, TextPart }
+      Template: {
+        TemplateName: requestBody.TemplateName,
+        HtmlPart: requestBody.HtmlPart,
+        SubjectPart: requestBody.SubjectPart,
+        TextPart: requestBody.TextPart,
+      }
     }
 
-    try {
-      await ses.createTemplate(params).promise()
-      return response.status(201).send({ message: 'Template créé avec succès' })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+    await new Promise((resolve, reject) => {
+      ses.createTemplate(params, (err, data) => {
+        if (err) reject(err)
+        else resolve(data)
+      })
+    })
+      .then(() => response.send(200, 'Created'))
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 
-  /**
-   * List all SES templates
-   */
   async listTemplates({ request, response }) {
-    const { region, MaxItems } = request.get()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
+    const requestParams = request.get()
 
-    try {
-      const data = await ses.listTemplates({ MaxItems: MaxItems || 5000 }).promise()
-      return response.status(200).send({ items: data.Templates || [] })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+    AWS.config.update({ region: requestParams.region })
+    const ses = new AWS.SES()
+
+    await new Promise((resolve, reject) => {
+      ses.listTemplates(
+        { MaxItems: requestParams.MaxItems || 5000 },
+        (err, data) => {
+          if (err) reject(err)
+          else resolve(data)
+        }
+      )
+    })
+      .then(data => {
+        response.status(200)
+        response.send({ items: data })
+      })
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 
-  /**
-   * Get a single SES template and extract its champs dynamiques
-   */
   async getTemplate({ request, response }) {
     const { TemplateName } = request.params
     const { region } = request.get()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
 
-    try {
-      const { Template } = await ses.getTemplate({ TemplateName }).promise()
+    AWS.config.update({ region })
+    const ses = new AWS.SES()
 
-      // Extraction des champs dynamiques
-      const fields = [
-        ...this.getDynamicFields(Template.SubjectPart),
-        ...this.getDynamicFields(Template.TextPart),
-        ...this.getDynamicFields(Template.HtmlPart),
-      ]
-      Template.dynamicFields = Array.from(new Set(fields))
+    await new Promise((resolve, reject) => {
+      ses.getTemplate({ TemplateName }, (err, data) => {
+        if (err) reject(err)
+        else resolve(data)
+      })
+    })
+      .then(data => {
+        response.status(200)
 
-      return response.status(200).send({ data: Template })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+        const { SubjectPart, TextPart, HtmlPart } = data.Template
+        let dynamicFieldsArr = []
+        dynamicFieldsArr = [
+          ...dynamicFieldsArr,
+          ...this.getDynamicFields(SubjectPart),
+          ...this.getDynamicFields(TextPart),
+          ...this.getDynamicFields(HtmlPart),
+        ]
+        dynamicFieldsArr = Array.from(new Set(dynamicFieldsArr))
+
+        data.Template.dynamicFields = dynamicFieldsArr
+        response.send({ data: data.Template })
+      })
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 
-  /**
-   * Update an existing SES template
-   */
   async updateTemplate({ request, response }) {
-    const { region, TemplateName, HtmlPart, SubjectPart, TextPart } = request.post()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
+    const requestBody = request.post()
+
+    AWS.config.update({ region: requestBody.region })
+    const ses = new AWS.SES()
 
     const params = {
-      Template: { TemplateName, HtmlPart, SubjectPart, TextPart }
+      Template: {
+        TemplateName: requestBody.TemplateName,
+        HtmlPart: requestBody.HtmlPart,
+        SubjectPart: requestBody.SubjectPart,
+        TextPart: requestBody.TextPart,
+      }
     }
 
-    try {
-      await ses.updateTemplate(params).promise()
-      return response.status(200).send({ message: 'Template mis à jour avec succès' })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+    await new Promise((resolve, reject) => {
+      ses.updateTemplate(params, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+      .then(() => response.send(200))
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 
-  /**
-   * Delete an SES template
-   */
   async deleteTemplate({ request, response }) {
     const { TemplateName } = request.params
     const { region } = request.get()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
 
-    try {
-      await ses.deleteTemplate({ TemplateName }).promise()
-      return response.status(200).send({ message: 'Template supprimé avec succès' })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+    AWS.config.update({ region })
+    const ses = new AWS.SES()
+
+    await new Promise((resolve, reject) => {
+      ses.deleteTemplate({ TemplateName }, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+      .then(() => response.send(200))
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 
-  /**
-   * Send an email using a stored SES template
-   */
   async sendTemplate({ request, response }) {
-    const { region, toAddress, source, templateName, templateData } = request.post()
-    const ses = new AWS.SES({ region: region || AWS.config.region })
-
+    const requestBody = request.post()
     const params = {
-      Destination: { ToAddresses: [toAddress] },
-      Source: source,
-      Template: templateName,
-      TemplateData: templateData,
+      Destination: { ToAddresses: [requestBody.toAddress] },
+      Source: requestBody.source,
+      Template: requestBody.templateName,
+      TemplateData: requestBody.templateData,
     }
 
-    try {
-      await ses.sendTemplatedEmail(params).promise()
-      return response.status(200).send({ message: 'Email envoyé avec succès' })
-    } catch (err) {
-      return response.status(500).send({ error: err.message || err })
-    }
+    AWS.config.update({ region: requestBody.region })
+    const ses = new AWS.SES()
+
+    await new Promise((resolve, reject) => {
+      ses.sendTemplatedEmail(params, (err, data) => {
+        if (err) reject(err)
+        else resolve(data)
+      })
+    })
+      .then(() => response.send(200))
+      .catch(err => {
+        response.status(500)
+        response.send(err)
+      })
   }
 }
 
